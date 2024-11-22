@@ -181,13 +181,80 @@ def today():
 
 @app.command()
 def sentence(sentence: str):
-    """Write a sentence with today's vocab."""
-    today = str(date.today())
-    if today in sentences_db:
-        typer.echo("You already wrote a sentence today!")
+    """
+    Write a sentence using today's vocab. 
+    If valid, append it to the last block of the current chapter.
+    """
+    # Fetch today's vocab
+    vocab_results = fetch_notion_data()
+    today_vocab_entry = get_deterministic_vocab(vocab_results)
+
+    if not today_vocab_entry:
+        typer.echo("No vocab data available for today.")
         return
-    sentences_db[today] = sentence
-    typer.echo(f"Saved sentence: {sentence}")
+
+    # Extract today's vocab
+    properties = today_vocab_entry.get("properties", {})
+    vocab_title = properties.get("Vocabulary", {}).get("title", [{}])[0].get("plain_text", "Unknown")
+
+    # Check if the sentence includes today's vocab
+    if vocab_title.lower() not in sentence.lower():
+        typer.echo(f"Your sentence must include today's vocab: '{vocab_title}'. Try again.")
+        return
+
+    # Fetch novel data to find the last block
+    results = fetch_novel_data()
+    if not results:
+        typer.echo("Failed to fetch novel data.")
+        return
+
+    # Recursively find the last child block in the current chapter
+    def find_last_block(blocks):
+        last_block = None
+        for block in blocks:
+            has_children = block.get("has_children", False)
+            if has_children:
+                children = fetch_block_children(block["id"])
+                last_block = find_last_block(children) or block
+            else:
+                last_block = block
+        return last_block
+
+    last_block = find_last_block(results)
+    if not last_block:
+        typer.echo("Couldn't determine the last block to append to.")
+        return
+
+    # Append the sentence to the last block
+    last_block_id = last_block["id"]
+    url = f"https://api.notion.com/v1/blocks/{last_block_id}/children"
+    payload = {
+        "children": [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": sentence
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    response = requests.patch(url, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        typer.echo("Your sentence has been added to the last block of the current chapter!")
+    else:
+        typer.echo(f"Failed to add your sentence. Status code: {response.status_code}")
+        typer.echo(response.text)
+
 @app.command()
 def showJournal():
     """Show all sentences."""
